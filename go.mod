@@ -145,6 +145,7 @@ require (
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/uuid v1.3.0 // indirect
+	github.com/heimdalr/dag v1.2.1 // indirect
 	github.com/ianlancetaylor/cgosymbolizer v0.0.0-20220405231054-a1ae3e4bba26 // indirect
 	github.com/inconshreveable/mousetrap v1.0.1 // indirect
 	github.com/ipfs/go-cid v0.3.2 // indirect

@@ -21,6 +21,7 @@ import (
 
 	"github.com/holiman/uint256"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon/core/blockstm"
 )
 
 // journalEntry is a modification entry in the state change journal that can be
@@ -165,6 +166,7 @@ type (
 func (ch createObjectChange) revert(s *IntraBlockState) {
 	delete(s.stateObjects, *ch.account)
 	delete(s.stateObjectsDirty, *ch.account)
+	MVWrite(s, blockstm.NewAddressKey(*ch.account))
 }
 
 func (ch createObjectChange) dirtied() *libcommon.Address {
@@ -173,6 +175,7 @@ func (ch createObjectChange) dirtied() *libcommon.Address {
 
 func (ch resetObjectChange) revert(s *IntraBlockState) {
 	s.setStateObject(*ch.account, ch.prev)
+	MVWrite(s, blockstm.NewAddressKey(ch.prev.address))
 }
 
 func (ch resetObjectChange) dirtied() *libcommon.Address {
@@ -184,6 +187,8 @@ func (ch selfdestructChange) revert(s *IntraBlockState) {
 	if obj != nil {
 		obj.selfdestructed = ch.prev
 		obj.setBalance(&ch.prevbalance)
+		MVWrite(s, blockstm.NewSubpathKey(*ch.account, SuicidePath))
+		MVWrite(s, blockstm.NewSubpathKey(*ch.account, BalancePath))
 	}
 }
 
@@ -202,6 +207,7 @@ func (ch touchChange) dirtied() *libcommon.Address {
 
 func (ch balanceChange) revert(s *IntraBlockState) {
 	s.getStateObject(*ch.account).setBalance(&ch.prev)
+	MVWrite(s, blockstm.NewSubpathKey(*ch.account, BalancePath))
 }
 
 func (ch balanceChange) dirtied() *libcommon.Address {
@@ -211,6 +217,7 @@ func (ch balanceChange) dirtied() *libcommon.Address {
 func (ch balanceIncrease) revert(s *IntraBlockState) {
 	if bi, ok := s.balanceInc[*ch.account]; ok {
 		bi.increase.Sub(&bi.increase, &ch.increase)
+		MVWrite(s, blockstm.NewSubpathKey(*ch.account, BalancePath))
 		bi.count--
 		if bi.count == 0 {
 			delete(s.balanceInc, *ch.account)
@@ -231,6 +238,7 @@ func (ch balanceIncreaseTransfer) revert(s *IntraBlockState) {
 }
 func (ch nonceChange) revert(s *IntraBlockState) {
 	s.getStateObject(*ch.account).setNonce(ch.prev)
+	MVWrite(s, blockstm.NewSubpathKey(*ch.account, NoncePath))
 }
 
 func (ch nonceChange) dirtied() *libcommon.Address {
@@ -239,6 +247,7 @@ func (ch nonceChange) dirtied() *libcommon.Address {
 
 func (ch codeChange) revert(s *IntraBlockState) {
 	s.getStateObject(*ch.account).setCode(ch.prevhash, ch.prevcode)
+	MVWrite(s, blockstm.NewSubpathKey(*ch.account, CodePath))
 }
 
 func (ch codeChange) dirtied() *libcommon.Address {
@@ -255,6 +264,7 @@ func (ch storageChange) dirtied() *libcommon.Address {
 
 func (ch fakeStorageChange) revert(s *IntraBlockState) {
 	s.getStateObject(*ch.account).fakeStorage[ch.key] = ch.prevalue
+	MVWrite(s, blockstm.NewStateKey(*ch.account, ch.key))
 }
 
 func (ch fakeStorageChange) dirtied() *libcommon.Address {
