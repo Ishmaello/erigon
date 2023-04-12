@@ -87,6 +87,7 @@ func accountsEqual(a1, a2 *accounts.Account) bool {
 func (w *ChangeSetWriter) UpdateAccountData(address libcommon.Address, original, account *accounts.Account) error {
 	//fmt.Printf("balance,%x,%d\n", address, &account.Balance)
 	if !accountsEqual(original, account) || w.storageChanged[address] {
+		// log.Info("UpdateAccountData", "address", hexutility.Encode(address[:]), "original", fmt.Sprintf("%+v", original), "account", fmt.Sprintf("%+v", account))
 		w.accountChanges[address] = originalAccountData(original, true /*omitHashes*/)
 	}
 	return nil
@@ -180,8 +181,8 @@ func (w *ChangeSetWriter) WriteHistory() error {
 
 func (w *ChangeSetWriter) PrintChangedAccounts() {
 	fmt.Println("Account Changes")
-	for k := range w.accountChanges {
-		fmt.Println(hexutility.Encode(k.Bytes()))
+	for k, v := range w.accountChanges {
+		fmt.Println(hexutility.Encode(k.Bytes()), hexutility.Encode(v))
 	}
 	fmt.Println("------------------------------------------")
 }

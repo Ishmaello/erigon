@@ -591,6 +591,10 @@ func FinalizeBlockExecution(engine consensus.Engine, stateReader state.StateRead
 		return nil, nil, nil, fmt.Errorf("committing block %d failed: %w", header.Number.Uint64(), err)
 	}
 
+	if header.Number.Int64() == 2764 {
+		stateWriter.(*state.PlainStateWriter).ChangeSetWriter().PrintChangedAccounts()
+	}
+
 	if err := stateWriter.WriteChangeSets(); err != nil {
 		return nil, nil, nil, fmt.Errorf("writing changesets for block %d failed: %w", header.Number.Uint64(), err)
 	}

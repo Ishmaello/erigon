@@ -19,6 +19,7 @@ package core
 import (
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/chain"
@@ -87,8 +88,11 @@ func GetHashFn(ref *types.Header, getHeader func(hash libcommon.Hash, number uin
 	// Cache will initially contain [refHash.parent],
 	// Then fill up with [refHash.p, refHash.pp, refHash.ppp, ...]
 	var cache []libcommon.Hash
+	mutex := sync.Mutex{}
 
 	return func(n uint64) libcommon.Hash {
+		mutex.Lock()
+		defer mutex.Unlock()
 		// If there's no hash cache yet, make one
 		if len(cache) == 0 {
 			cache = append(cache, ref.ParentHash)

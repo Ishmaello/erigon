@@ -17,11 +17,13 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/ledgerwatch/erigon-lib/chain"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/common/math"
 	"github.com/ledgerwatch/erigon/consensus"
 	"github.com/ledgerwatch/erigon/consensus/misc"
@@ -29,6 +31,7 @@ import (
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/core/vm/evmtypes"
 	"github.com/ledgerwatch/erigon/crypto"
+	"github.com/ledgerwatch/erigon/ethdb"
 	"github.com/ledgerwatch/log/v3"
 	"golang.org/x/exp/slices"
 
@@ -67,7 +70,6 @@ type ExecutionTask struct {
 	block                      *types.Block
 	index                      int
 	statedb                    *state.IntraBlockState // State database that stores the modified values after tx execution.
-	cleanStateDB               *state.IntraBlockState // A clean copy of the initial statedb. It should not be modified.
 	finalStateDB               *state.IntraBlockState // The final statedb.
 	header                     *types.Header
 	evmConfig                  *vm.Config
@@ -86,55 +88,63 @@ type ExecutionTask struct {
 	// next k elements in dependencies -> transaction indexes on which transaction i is dependent on
 	dependencies []int
 
-	blockContext evmtypes.BlockContext
-	evm          vm.VMInterface
-	engine       consensus.EngineReader
-	msg          *types.Message
-	coinbase     libcommon.Address
+	blockContext  evmtypes.BlockContext
+	engine        consensus.EngineReader
+	msg           *types.Message
+	db            kv.RwDB
+	batch         ethdb.Database
+	dbtx          kv.Tx
+	rules         *chain.Rules
+	blockHashFunc func(n uint64) libcommon.Hash
+	getHeader     func(hash libcommon.Hash, number uint64) *types.Header
+}
+
+type dbWrapper struct {
+	kv.Tx
+	m ethdb.Database
+}
+
+func (m dbWrapper) Put(table string, key []byte, value []byte) error {
+	panic("Shouldn't happen")
+}
+
+func (m dbWrapper) GetOne(table string, key []byte) ([]byte, error) {
+	if value, err := m.m.GetOne(table, key); err != nil {
+		return m.Tx.GetOne(table, key)
+	} else {
+		return value, nil
+	}
 }
 
 func (task *ExecutionTask) Execute(mvh *blockstm.MVHashMap, incarnation int) (err error) {
-	task.statedb = task.cleanStateDB.Copy()
-	task.statedb.Prepare(task.tx.Hash(), task.blockHash, task.index)
-	task.statedb.SetMVHashmap(mvh)
-	task.statedb.SetBlockSTMIncarnation(incarnation)
-
-	rules := task.evm.ChainRules()
-	if task.msg != nil {
-		msg, err := task.tx.AsMessage(*types.MakeSigner(task.config, task.header.Number.Uint64()), task.header.BaseFee, rules)
+	if task.dbtx == nil {
+		task.dbtx, err = task.db.BeginRo(context.Background())
 		if err != nil {
+			err = blockstm.ErrExecAbortError{}
 			return err
 		}
-		msg.SetCheckNonce(!task.evmConfig.StatelessExec)
-
-		if msg.FeeCap().IsZero() && task.engine != nil {
-			// Only zero-gas transactions may be service ones
-			syscall := func(contract libcommon.Address, data []byte) ([]byte, error) {
-				return SysCallContract(contract, data, *task.evm.ChainConfig(), task.statedb, task.header, task.engine, true /* constCall */)
-			}
-			msg.SetIsFree(task.engine.IsServiceTransaction(msg.From(), syscall))
-		}
-
-		task.msg = &msg
-		task.sender = msg.From()
 	}
 
-	task.evm.Reset(task.evm.TxContext(), task.statedb)
+	m := dbWrapper{task.dbtx, task.batch}
 
-	defer func() {
-		if r := recover(); r != nil {
-			// In some pre-matured executions, EVM will panic. Recover from panic and retry the execution.
-			log.Debug("Recovered from EVM failure.", "Error:", r)
+	task.statedb = state.NewWithMVHashmap(state.NewPlainStateReader(m), mvh)
+	task.statedb.Prepare(task.tx.Hash(), task.blockHash, task.index)
+	task.statedb.SetBlockSTMIncarnation(incarnation)
 
-			err = blockstm.ErrExecAbortError{Dependency: task.statedb.DepTxIndex()}
+	blockContext := NewEVMBlockContext(task.header, task.blockHashFunc, task.engine, nil)
 
-			return
-		}
-	}()
+	evm := vm.NewEVM(blockContext, evmtypes.TxContext{}, task.statedb, task.config, *task.evmConfig)
+
+	txContext := NewEVMTxContext(task.msg)
+	if task.evmConfig.TraceJumpDest {
+		txContext.TxHash = task.tx.Hash()
+	}
+
+	evm.Reset(txContext, task.statedb)
 
 	// Apply the transaction to the current state (included in the env).
 	if *task.shouldDelayFeeCal {
-		task.result, err = ApplyMessageNoFeeBurnOrTip(task.evm, task.msg, new(GasPool).AddGas(task.gasLimit), true, false)
+		task.result, err = ApplyMessageNoFeeBurnOrTip(evm, task.msg, new(GasPool).AddGas(task.gasLimit), true, false)
 
 		if task.result == nil || err != nil {
 			return blockstm.ErrExecAbortError{Dependency: task.statedb.DepTxIndex(), OriginError: err}
@@ -143,18 +153,18 @@ func (task *ExecutionTask) Execute(mvh *blockstm.MVHashMap, incarnation int) (er
 		reads := task.statedb.MVReadMap()
 
 		if _, ok := reads[blockstm.NewSubpathKey(task.blockContext.Coinbase, state.BalancePath)]; ok {
-			log.Info("Coinbase is in MVReadMap", "address", task.blockContext.Coinbase)
+			log.Debug("Coinbase is in MVReadMap", "address", task.blockContext.Coinbase)
 
 			task.shouldRerunWithoutFeeDelay = true
 		}
 
 		if _, ok := reads[blockstm.NewSubpathKey(task.result.BurntContractAddress, state.BalancePath)]; ok {
-			log.Info("BurntContractAddress is in MVReadMap", "address", task.result.BurntContractAddress)
+			log.Debug("BurntContractAddress is in MVReadMap", "address", task.result.BurntContractAddress)
 
 			task.shouldRerunWithoutFeeDelay = true
 		}
 	} else {
-		task.result, err = ApplyMessage(task.evm, task.msg, new(GasPool).AddGas(task.gasLimit), true, false)
+		task.result, err = ApplyMessage(evm, task.msg, new(GasPool).AddGas(task.gasLimit), true, false)
 	}
 
 	if task.statedb.HadInvalidRead() || err != nil {
@@ -162,8 +172,7 @@ func (task *ExecutionTask) Execute(mvh *blockstm.MVHashMap, incarnation int) (er
 		return
 	}
 
-	task.statedb.FinalizeTx(task.evm.ChainRules(), task.stateWriter)
-
+	task.statedb.FinalizeTx(evm.ChainRules(), task.stateWriter)
 	return
 }
 
@@ -192,20 +201,9 @@ func (task *ExecutionTask) Dependencies() []int {
 }
 
 func (task *ExecutionTask) Settle() {
-	defer func() {
-		if r := recover(); r != nil {
-			// In some rare cases, ApplyMVWriteSet will panic due to an index out of range error when calculating the
-			// address hash in sha3 module. Recover from panic and continue the execution.
-			// After recovery, block receipts or merckle root will be incorrect, but this is fine, because the block
-			// will be rejected and re-synced.
-			log.Info("Recovered from error", "Error:", r)
-			return
-		}
-	}()
-
 	task.finalStateDB.Prepare(task.tx.Hash(), task.blockHash, task.index)
 
-	coinbaseBalance := task.finalStateDB.GetBalance(task.coinbase)
+	coinbaseBalance := task.finalStateDB.GetBalance(task.blockContext.Coinbase).Clone()
 
 	task.finalStateDB.ApplyMVWriteSet(task.statedb.MVWriteList())
 
@@ -218,8 +216,8 @@ func (task *ExecutionTask) Settle() {
 			task.finalStateDB.AddBalance(task.result.BurntContractAddress, task.result.FeeBurnt)
 		}
 
-		task.finalStateDB.AddBalance(task.coinbase, task.result.FeeTipped)
-		output1 := task.result.SenderInitBalance
+		task.finalStateDB.AddBalance(task.blockContext.Coinbase, task.result.FeeTipped)
+		output1 := task.result.SenderInitBalance.Clone()
 		output2 := coinbaseBalance.Clone()
 
 		// Deprecating transfer log and will be removed in future fork. PLEASE DO NOT USE this transfer log going forward. Parameters won't get updated as expected going forward with EIP1559
@@ -228,7 +226,7 @@ func (task *ExecutionTask) Settle() {
 			task.finalStateDB,
 
 			task.msg.From(),
-			task.coinbase,
+			task.blockContext.Coinbase,
 
 			task.result.FeeTipped,
 			task.result.SenderInitBalance,
@@ -242,7 +240,7 @@ func (task *ExecutionTask) Settle() {
 	var root []byte
 
 	if task.config.IsByzantium(task.block.NumberU64()) {
-		task.finalStateDB.FinalizeTx(task.evm.ChainRules(), task.stateWriter)
+		task.finalStateDB.FinalizeTx(task.rules, task.stateWriter)
 	}
 
 	*task.totalUsedGas += task.result.UsedGas
@@ -294,6 +292,9 @@ func ParallelExecuteBlockEphemerallyBor(
 	epochReader consensus.EpochReader,
 	chainReader consensus.ChainHeaderReader,
 	getTracer func(txIndex int, txHash libcommon.Hash) (vm.EVMLogger, error),
+	getHeader func(hash libcommon.Hash, number uint64) *types.Header,
+	db kv.RwDB,
+	batch ethdb.Database,
 ) (*EphemeralExecResult, error) {
 
 	defer BlockExecutionTimer.UpdateDuration(time.Now())
@@ -330,58 +331,85 @@ func ParallelExecuteBlockEphemerallyBor(
 	blockContext := NewEVMBlockContext(header, blockHashFunc, engine, nil)
 	vmenv := vm.NewEVM(blockContext, evmtypes.TxContext{}, ibs, chainConfig, *vmConfig)
 
+	rules := vmenv.ChainRules()
+
+	vmConfig.Debug = false
+
 	for i, tx := range block.Transactions() {
-		cleansdb := ibs.Copy()
+		msg, err := tx.AsMessage(*types.MakeSigner(chainConfig, header.Number.Uint64()), header.BaseFee, rules)
+		if err != nil {
+			return nil, err
+		}
+		msg.SetCheckNonce(!vmConfig.StatelessExec)
+
+		if msg.FeeCap().IsZero() && engine != nil {
+			// Only zero-gas transactions may be service ones
+			syscall := func(contract libcommon.Address, data []byte) ([]byte, error) {
+				return SysCallContract(contract, data, *vmenv.ChainConfig(), ibs, header, engine, true /* constCall */)
+			}
+			msg.SetIsFree(engine.IsServiceTransaction(msg.From(), syscall))
+		}
+
+		tracer, err := getTracer(i, tx.Hash())
+
+		evmConfig := &vm.Config{
+			Debug:  vmConfig.Debug,
+			Tracer: tracer,
+		}
+
 		task := &ExecutionTask{
 			config:            chainConfig,
 			gasLimit:          block.GasLimit(),
 			blockHash:         block.Hash(),
+			block:             block,
 			tx:                tx,
 			index:             i,
-			cleanStateDB:      cleansdb,
 			finalStateDB:      ibs,
 			header:            header,
-			evmConfig:         vmConfig,
+			evmConfig:         evmConfig,
 			shouldDelayFeeCal: &shouldDelayFeeCal,
 			totalUsedGas:      usedGas,
 			receipts:          &receipts,
 			allLogs:           &logs,
 			dependencies:      nil,
 			blockContext:      blockContext,
-			evm:               vmenv,
-			coinbase:          blockContext.Coinbase,
 			stateWriter:       noop,
+			db:                db,
+			batch:             batch,
+			sender:            msg.From(),
+			msg:               &msg,
+			rules:             rules,
+			blockHashFunc:     blockHashFunc,
+			engine:            engine,
+			getHeader:         getHeader,
 		}
 
 		tasks = append(tasks, task)
+		defer func() {
+			if task.dbtx != nil {
+				task.dbtx.Rollback()
+			}
+		}()
 	}
 
-	backupStateDB := ibs.Copy()
+	var err error
 
-	_, err := blockstm.ExecuteParallel(tasks, false, false)
+	_, err = blockstm.ExecuteParallel(tasks, false, false)
+
+	if err != nil {
+		return ExecuteBlockEphemerallyBor(chainConfig, vmConfig, blockHashFunc, engine, block, stateReader, stateWriter, epochReader, chainReader, getTracer)
+	}
 
 	for _, task := range tasks {
 		task := task.(*ExecutionTask)
 		if task.shouldRerunWithoutFeeDelay {
-			shouldDelayFeeCal = false
-			*ibs = *backupStateDB
-
-			logs = []*types.Log{}
-			receipts = types.Receipts{}
-			usedGas = new(uint64)
-
-			for _, t := range tasks {
-				t := t.(*ExecutionTask)
-				t.finalStateDB = backupStateDB
-				t.allLogs = &logs
-				t.receipts = &receipts
-				t.totalUsedGas = usedGas
-			}
-
-			_, err = blockstm.ExecuteParallel(tasks, false, false)
-
-			break
+			return ExecuteBlockEphemerallyBor(chainConfig, vmConfig, blockHashFunc, engine, block, stateReader, stateWriter, epochReader, chainReader, getTracer)
 		}
+	}
+
+	for _, task := range tasks {
+		includedTxs = append(includedTxs, task.(*ExecutionTask).tx)
+		task.Settle()
 	}
 
 	if err != nil {
@@ -389,12 +417,16 @@ func ParallelExecuteBlockEphemerallyBor(
 		return nil, err
 	}
 
-	for _, task := range tasks {
-		includedTxs = append(includedTxs, task.(*ExecutionTask).tx)
-	}
-
 	receiptSha := types.DeriveSha(receipts)
 	if !vmConfig.StatelessExec && chainConfig.IsByzantium(header.Number.Uint64()) && !vmConfig.NoReceipts && receiptSha != block.ReceiptHash() {
+		// for i, l := range logs {
+		// 	log.Info("Log", "index", i, "address", l.Address, "topics", l.Topics, "data", fmt.Sprintf("%x", l.Data))
+		// }
+
+		for i, r := range tasks {
+			log.Info("Receipt", "index", i, "incarnation", r.(*ExecutionTask).statedb.Version().Incarnation, "usedGas", r.(*ExecutionTask).result.UsedGas)
+		}
+
 		return nil, fmt.Errorf("mismatched receipt headers for block %d (%s != %s)", block.NumberU64(), receiptSha.Hex(), block.ReceiptHash().Hex())
 	}
 

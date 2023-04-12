@@ -39,12 +39,25 @@ type StateReader interface {
 	ReadAccountIncarnation(address libcommon.Address) (uint64, error)
 }
 
+type ThreadSafeStateReader interface {
+	StateReader
+	Start()
+	Stop()
+}
+
 type StateWriter interface {
 	UpdateAccountData(address libcommon.Address, original, account *accounts.Account) error
 	UpdateAccountCode(address libcommon.Address, incarnation uint64, codeHash libcommon.Hash, code []byte) error
 	DeleteAccount(address libcommon.Address, original *accounts.Account) error
 	WriteAccountStorage(address libcommon.Address, incarnation uint64, key *libcommon.Hash, original, value *uint256.Int) error
 	CreateContract(address libcommon.Address) error
+}
+
+type ThreadSafeStateReaderWriter interface {
+	StateReader
+	StateWriter
+	Start()
+	Stop()
 }
 
 type WriterWithChangeSets interface {

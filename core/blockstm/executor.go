@@ -177,20 +177,11 @@ type ParallelExecutor struct {
 	// Channel to signal that the result of a transaction could be written to storage
 	specTaskQueue SafeQueue
 
-	// A priority queue that stores speculative tasks
-	chSettle chan int
-
 	// Channel to signal that a transaction has finished executing
 	chResults chan struct{}
 
 	// A priority queue that stores the transaction index of results, so we can validate the results in order
 	resultQueue SafeQueue
-
-	// A wait group to wait for all settling tasks to finish
-	settleWg sync.WaitGroup
-
-	// An integer that tracks the index of last settled transaction
-	lastSettled int
 
 	// For a task that runs only after all of its preceding tasks have finished and passed validation,
 	// its result will be absolutely valid and therefore its validation could be skipped.
@@ -261,11 +252,9 @@ func NewParallelExecutor(tasks []ExecTask, profile bool, metadata bool) *Paralle
 		stats:              make(map[int]ExecutionStat, numTasks),
 		chTasks:            make(chan ExecVersionView, numTasks),
 		chSpeculativeTasks: make(chan struct{}, numTasks),
-		chSettle:           make(chan int, numTasks),
 		chResults:          make(chan struct{}, numTasks),
 		specTaskQueue:      specTaskQueue,
 		resultQueue:        resultQueue,
-		lastSettled:        -1,
 		skipCheck:          make(map[int]bool),
 		execTasks:          makeStatusManager(numTasks),
 		validateTasks:      makeStatusManager(0),
@@ -285,6 +274,7 @@ func NewParallelExecutor(tasks []ExecTask, profile bool, metadata bool) *Paralle
 
 // nolint: gocognit
 func (pe *ParallelExecutor) Prepare() {
+	prevSenderTx := make(map[common.Address]int)
 	for i, t := range pe.tasks {
 		clearPendingFlag := false
 
@@ -304,8 +294,6 @@ func (pe *ParallelExecutor) Prepare() {
 				clearPendingFlag = false
 			}
 		} else {
-			prevSenderTx := make(map[common.Address]int)
-
 			if tx, ok := prevSenderTx[t.Sender()]; ok {
 				pe.execTasks.addDependencies(tx, i)
 				pe.execTasks.clearPending(i)
@@ -328,7 +316,9 @@ func (pe *ParallelExecutor) Prepare() {
 					start = time.Since(pe.begin)
 				}
 
+				// log.Info("Executing transaction", "ver", task.ver)
 				res := task.Execute()
+				// log.Info("Finished transaction", "ver", task.ver)
 
 				if res.err == nil {
 					pe.mvh.FlushMVWriteSet(res.txAllOut)
@@ -364,15 +354,6 @@ func (pe *ParallelExecutor) Prepare() {
 		}(i)
 	}
 
-	pe.settleWg.Add(len(pe.tasks))
-
-	go func() {
-		for t := range pe.chSettle {
-			pe.tasks[t].Settle()
-			pe.settleWg.Done()
-		}
-	}()
-
 	// bootstrap first execution
 	tx := pe.execTasks.takeNextPending()
 	if tx != -1 {
@@ -391,12 +372,6 @@ func (pe *ParallelExecutor) Close(wait bool) {
 	}
 
 	close(pe.chResults)
-
-	if wait {
-		pe.settleWg.Wait()
-	}
-
-	close(pe.chSettle)
 }
 
 // nolint: gocognit
@@ -406,8 +381,9 @@ func (pe *ParallelExecutor) Step(res *ExecResult) (result ParallelExecutionResul
 	if abortErr, ok := res.err.(ErrExecAbortError); ok && abortErr.OriginError != nil && pe.skipCheck[tx] {
 		// If the transaction failed when we know it should not fail, this means the transaction itself is
 		// bad (e.g. wrong nonce), and we should exit the execution immediately
+		log.Warn("Transaction failed during parallel execution", "tx", tx, "hash", pe.tasks[tx].Hash(), "err", abortErr.OriginError)
 		err = fmt.Errorf("could not apply tx %d [%v]: %w", tx, pe.tasks[tx].Hash(), abortErr.OriginError)
-		pe.Close(false)
+		pe.Close(true)
 
 		return
 	}
@@ -522,15 +498,6 @@ func (pe *ParallelExecutor) Step(res *ExecResult) (result ParallelExecutionResul
 
 	// Settle transactions that have been validated to be correct and that won't be re-executed again
 	maxValidated := pe.validateTasks.maxAllComplete()
-
-	for pe.lastSettled < maxValidated {
-		pe.lastSettled++
-		if pe.execTasks.checkInProgress(pe.lastSettled) || pe.execTasks.checkPending(pe.lastSettled) || pe.execTasks.isBlocked(pe.lastSettled) {
-			pe.lastSettled--
-			break
-		}
-		pe.chSettle <- pe.lastSettled
-	}
 
 	if pe.validateTasks.countComplete() == len(pe.tasks) && pe.execTasks.countComplete() == len(pe.tasks) {
 		log.Debug("blockstm exec summary", "execs", pe.cntExec, "success", pe.cntSuccess, "aborts", pe.cntAbort, "validations", pe.cntTotalValidations, "failures", pe.cntValidationFail, "#tasks/#execs", fmt.Sprintf("%.2f%%", float64(len(pe.tasks))/float64(pe.cntExec)*100))

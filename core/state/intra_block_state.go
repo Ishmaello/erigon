@@ -20,6 +20,7 @@ package state
 import (
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/chain"
@@ -62,7 +63,8 @@ type IntraBlockState struct {
 	stateObjects      map[libcommon.Address]*stateObject
 	stateObjectsDirty map[libcommon.Address]struct{}
 
-	nilAccounts map[libcommon.Address]struct{} // Remember non-existent account to avoid reading them again
+	nilAccounts      map[libcommon.Address]struct{} // Remember non-existent account to avoid reading them again
+	nilAccountsMutex sync.Mutex
 
 	// DB error.
 	// State objects are used by the consensus core and VM which are
@@ -94,6 +96,7 @@ type IntraBlockState struct {
 	readMap     map[blockstm.Key]blockstm.ReadDescriptor
 	writeMap    map[blockstm.Key]blockstm.WriteDescriptor
 	dep         int
+	QueryList   []blockstm.Key
 }
 
 // Create a new state from a given trie
@@ -103,11 +106,21 @@ func New(stateReader StateReader) *IntraBlockState {
 		stateObjects:      map[libcommon.Address]*stateObject{},
 		stateObjectsDirty: map[libcommon.Address]struct{}{},
 		nilAccounts:       map[libcommon.Address]struct{}{},
+		nilAccountsMutex:  sync.Mutex{},
 		logs:              map[libcommon.Hash][]*types.Log{},
 		journal:           newJournal(),
 		accessList:        newAccessList(),
 		balanceInc:        map[libcommon.Address]*BalanceIncrease{},
+		QueryList:         make([]blockstm.Key, 0, 100),
 	}
+}
+
+func (ibs *IntraBlockState) SetStateReader(stateReader StateReader) {
+	ibs.stateReader = stateReader
+}
+
+func (ibs *IntraBlockState) GetStateReader() StateReader {
+	return ibs.stateReader
 }
 
 func NewWithMVHashmap(stateReader StateReader, mvhm *blockstm.MVHashMap) *IntraBlockState {
@@ -221,18 +234,28 @@ func MVRead[T any](s *IntraBlockState, k blockstm.Key, defaultV T, readStorage f
 	switch res.Status() {
 	case blockstm.MVReadResultDone:
 		{
+			// if s.txIndex == 8 {
+			// 	log.Info("WTH Readmap", "reading from", s.txIndex, "key", k, "value", res.Value().(*IntraBlockState).txIndex)
+			// }
 			v = readStorage(res.Value().(*IntraBlockState))
 			rd.Kind = blockstm.ReadKindMap
 		}
 	case blockstm.MVReadResultDependency:
 		{
 			s.dep = res.DepIdx()
+			return defaultV
 
-			panic("Found dependency")
+			// panic("Found dependency")
 		}
 	case blockstm.MVReadResultNone:
 		{
+			// if s.txIndex == 8 {
+			// 	fmt.Println("Read from storage", "key", k)
+			// }
 			v = readStorage(s)
+			// if s.txIndex == 8 {
+			// 	fmt.Println("Read from storage", "key", k, "value", v)
+			// }
 			rd.Kind = blockstm.ReadKindStorage
 		}
 	default:
@@ -241,7 +264,10 @@ func MVRead[T any](s *IntraBlockState, k blockstm.Key, defaultV T, readStorage f
 
 	// TODO: I assume we don't want to overwrite an existing read because this could - for example - change a storage
 	//  read to map if the same value is read multiple times.
+	// s.readMapMutex.Lock()
+	// defer s.readMapMutex.Unlock()
 	if _, ok := s.readMap[k]; !ok {
+		// log.Info("Readmap", "reading from", s.Version())
 		s.readMap[k] = rd
 	}
 
@@ -312,14 +338,16 @@ func (sw *IntraBlockState) ApplyMVWriteSet(writes []blockstm.WriteDescriptor) {
 		path := writes[i].Path
 		sr := writes[i].Val.(*IntraBlockState)
 
+		addr := path.GetAddress()
+
+		sw.SetIncarnation(addr, sr.GetIncarnation(addr))
+
 		if path.IsState() {
-			addr := path.GetAddress()
 			stateKey := path.GetStateKey()
 			var state uint256.Int
 			sr.GetState(addr, &stateKey, &state)
 			sw.SetState(addr, &stateKey, state)
 		} else {
-			addr := path.GetAddress()
 			switch path.GetSubpath() {
 			case BalancePath:
 				sw.SetBalance(addr, sr.GetBalance(addr))
@@ -380,6 +408,10 @@ func (sdb *IntraBlockState) Reset() {
 	//sdb.clearJournalAndRefund()
 	//sdb.accessList = newAccessList()
 	//sdb.balanceInc = make(map[libcommon.Address]*BalanceIncrease)
+
+	sdb.readMap = nil
+	sdb.writeMap = nil
+	sdb.dep = -1
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *types.Log) {
@@ -446,8 +478,8 @@ func (sdb *IntraBlockState) GetBalance(addr libcommon.Address) *uint256.Int {
 		return u256.Num0
 	}
 
-	return MVRead(sdb, blockstm.NewSubpathKey(addr, BalancePath), u256.Num0, func(sdb *IntraBlockState) *uint256.Int {
-		stateObject := sdb.getStateObject(addr)
+	return MVRead(sdb, blockstm.NewSubpathKey(addr, BalancePath), u256.Num0, func(s *IntraBlockState) *uint256.Int {
+		stateObject := s.getStateObject(addr)
 		if stateObject != nil && !stateObject.deleted {
 			return stateObject.Balance()
 		}
@@ -461,8 +493,8 @@ func (sdb *IntraBlockState) GetNonce(addr libcommon.Address) uint64 {
 		return 0
 	}
 
-	return MVRead(sdb, blockstm.NewSubpathKey(addr, NoncePath), 0, func(sdb *IntraBlockState) uint64 {
-		stateObject := sdb.getStateObject(addr)
+	return MVRead(sdb, blockstm.NewSubpathKey(addr, NoncePath), 0, func(s *IntraBlockState) uint64 {
+		stateObject := s.getStateObject(addr)
 		if stateObject != nil && !stateObject.deleted {
 			return stateObject.Nonce()
 		}
@@ -482,15 +514,15 @@ func (sdb *IntraBlockState) GetCode(addr libcommon.Address) []byte {
 		return nil
 	}
 
-	return MVRead(sdb, blockstm.NewSubpathKey(addr, CodePath), nil, func(sdb *IntraBlockState) []byte {
-		stateObject := sdb.getStateObject(addr)
+	return MVRead(sdb, blockstm.NewSubpathKey(addr, CodePath), nil, func(s *IntraBlockState) []byte {
+		stateObject := s.getStateObject(addr)
 		if stateObject != nil && !stateObject.deleted {
-			if sdb.trace {
+			if s.trace {
 				fmt.Printf("GetCode %x, returned %d\n", addr, len(stateObject.Code()))
 			}
 			return stateObject.Code()
 		}
-		if sdb.trace {
+		if s.trace {
 			fmt.Printf("GetCode %x, returned nil\n", addr)
 		}
 		return nil
@@ -503,17 +535,17 @@ func (sdb *IntraBlockState) GetCodeSize(addr libcommon.Address) int {
 		return 0
 	}
 
-	return MVRead(sdb, blockstm.NewSubpathKey(addr, CodePath), 0, func(sdb *IntraBlockState) int {
-		stateObject := sdb.getStateObject(addr)
+	return MVRead(sdb, blockstm.NewSubpathKey(addr, CodePath), 0, func(s *IntraBlockState) int {
+		stateObject := s.getStateObject(addr)
 		if stateObject == nil || stateObject.deleted {
 			return 0
 		}
 		if stateObject.code != nil {
 			return len(stateObject.code)
 		}
-		len, err := sdb.stateReader.ReadAccountCodeSize(addr, stateObject.data.Incarnation, stateObject.data.CodeHash)
+		len, err := s.stateReader.ReadAccountCodeSize(addr, stateObject.data.Incarnation, stateObject.data.CodeHash)
 		if err != nil {
-			sdb.setErrorUnsafe(err)
+			s.setErrorUnsafe(err)
 		}
 		return len
 	})
@@ -525,8 +557,8 @@ func (sdb *IntraBlockState) GetCodeHash(addr libcommon.Address) libcommon.Hash {
 		return libcommon.Hash{}
 	}
 
-	return MVRead(sdb, blockstm.NewSubpathKey(addr, CodePath), libcommon.Hash{}, func(sdb *IntraBlockState) libcommon.Hash {
-		stateObject := sdb.getStateObject(addr)
+	return MVRead(sdb, blockstm.NewSubpathKey(addr, CodePath), libcommon.Hash{}, func(s *IntraBlockState) libcommon.Hash {
+		stateObject := s.getStateObject(addr)
 		if stateObject == nil || stateObject.deleted {
 			return libcommon.Hash{}
 		}
@@ -542,8 +574,8 @@ func (sdb *IntraBlockState) GetState(addr libcommon.Address, key *libcommon.Hash
 		return
 	}
 
-	MVRead(sdb, blockstm.NewStateKey(addr, *key), nil, func(sdb *IntraBlockState) *uint256.Int {
-		stateObject := sdb.getStateObject(addr)
+	MVRead(sdb, blockstm.NewStateKey(addr, *key), nil, func(s *IntraBlockState) *uint256.Int {
+		stateObject := s.getStateObject(addr)
 		if stateObject != nil && !stateObject.deleted {
 			stateObject.GetState(key, value)
 		} else {
@@ -562,8 +594,8 @@ func (sdb *IntraBlockState) GetCommittedState(addr libcommon.Address, key *libco
 		return
 	}
 
-	MVRead(sdb, blockstm.NewStateKey(addr, *key), nil, func(sdb *IntraBlockState) *uint256.Int {
-		stateObject := sdb.getStateObject(addr)
+	MVRead(sdb, blockstm.NewStateKey(addr, *key), nil, func(s *IntraBlockState) *uint256.Int {
+		stateObject := s.getStateObject(addr)
 		if stateObject != nil && !stateObject.deleted {
 			stateObject.GetCommittedState(key, value)
 		} else {
@@ -579,8 +611,8 @@ func (sdb *IntraBlockState) HasSelfdestructed(addr libcommon.Address) bool {
 		return false
 	}
 
-	return MVRead(sdb, blockstm.NewSubpathKey(addr, SuicidePath), false, func(sdb *IntraBlockState) bool {
-		stateObject := sdb.getStateObject(addr)
+	return MVRead(sdb, blockstm.NewSubpathKey(addr, SuicidePath), false, func(s *IntraBlockState) bool {
+		stateObject := s.getStateObject(addr)
 		if stateObject == nil {
 			return false
 		}
@@ -754,35 +786,37 @@ func (sdb *IntraBlockState) Selfdestruct(addr libcommon.Address) bool {
 }
 
 func (sdb *IntraBlockState) getStateObject(addr libcommon.Address) *stateObject {
-	return MVRead(sdb, blockstm.NewAddressKey(addr), nil, func(sdb *IntraBlockState) *stateObject {
+	return MVRead(sdb, blockstm.NewAddressKey(addr), nil, func(s *IntraBlockState) *stateObject {
 		// Prefer 'live' objects.
-		if obj := sdb.stateObjects[addr]; obj != nil {
+		if obj := s.stateObjects[addr]; obj != nil {
 			return obj
 		}
 
 		// Load the object from the database.
-		if _, ok := sdb.nilAccounts[addr]; ok {
-			if bi, ok := sdb.balanceInc[addr]; ok && !bi.transferred {
-				return sdb.createObject(addr, nil)
+		s.nilAccountsMutex.Lock()
+		defer s.nilAccountsMutex.Unlock()
+		if _, ok := s.nilAccounts[addr]; ok {
+			if bi, ok := s.balanceInc[addr]; ok && !bi.transferred {
+				return s.createObject(addr, nil)
 			}
 			return nil
 		}
-		account, err := sdb.stateReader.ReadAccountData(addr)
+		account, err := s.stateReader.ReadAccountData(addr)
 		if err != nil {
-			sdb.setErrorUnsafe(err)
+			s.setErrorUnsafe(err)
 			return nil
 		}
 		if account == nil {
-			sdb.nilAccounts[addr] = struct{}{}
-			if bi, ok := sdb.balanceInc[addr]; ok && !bi.transferred {
-				return sdb.createObject(addr, nil)
+			s.nilAccounts[addr] = struct{}{}
+			if bi, ok := s.balanceInc[addr]; ok && !bi.transferred {
+				return s.createObject(addr, nil)
 			}
 			return nil
 		}
 
 		// Insert into the live set.
 		obj := newObject(sdb, addr, account, account)
-		sdb.setStateObject(addr, obj)
+		s.setStateObject(addr, obj)
 		return obj
 
 	})

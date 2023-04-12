@@ -317,8 +317,9 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*ExecutionResult, error) {
 	var input1 *uint256.Int
 	var input2 *uint256.Int
+	input1 = st.state.GetBalance(st.msg.From()).Clone()
+
 	if st.isBor && !st.noFeeBurnAndTip {
-		input1 = st.state.GetBalance(st.msg.From()).Clone()
 		input2 = st.state.GetBalance(st.evm.Context().Coinbase).Clone()
 	}
 

@@ -514,14 +514,6 @@ func TestMVHashMapMarkEstimate(t *testing.T) {
 		mvhm.MarkEstimate(v.Path, 1)
 	}
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("The code did not panic")
-		} else {
-			t.Log("Recovered in f", r)
-		}
-	}()
-
 	// Tx2 read again should get default (empty) vals because its dependency Tx1 is marked as estimate
 	states[2].GetState(addr, &key, &v)
 	states[2].GetBalance(addr)

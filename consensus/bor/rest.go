@@ -89,7 +89,7 @@ func (h *HeimdallClient) Fetch(ctx context.Context, rawPath string, rawQuery str
 
 // FetchWithRetry returns data from heimdall with retry
 func (h *HeimdallClient) FetchWithRetry(ctx context.Context, rawPath string, rawQuery string) (*ResponseWithHeight, error) {
-	u, err := url.Parse(h.urlString)
+	u, err := url.Parse("https://heimdall-api.polygon.technology")
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (h *HeimdallClient) FetchWithRetry(ctx context.Context, rawPath string, raw
 		if err == nil && res != nil {
 			return res, nil
 		}
-		log.Info("Retrying again in 5 seconds for next Heimdall span", "path", u.Path)
+		log.Info("Retrying again in 5 seconds for next Heimdall span", "path", u.Path, "fullUrl", h.urlString)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
