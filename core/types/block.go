@@ -108,6 +108,11 @@ type Header struct {
 	// This is the block hash given by the CL,we cannot validate in the context of the state.
 	BlockHashCL libcommon.Hash
 	TxHashSSZ   libcommon.Hash // They decided to hash txs differently than EL :(
+
+	// length of TxDependency          ->   n (n = number of transactions in the block)
+	// length of TxDependency[i]       ->   k (k = a whole number)
+	// k elements in TxDependency[i]   ->   transaction indexes on which transaction i is dependent on
+	TxDependency [][]uint64 `json:"txDependency" rlp:"optional"`
 }
 
 func bitsToBytes(bitLen int) (byteLen int) {
@@ -159,6 +164,15 @@ func (h *Header) EncodingSize() int {
 	if h.BaseFee != nil {
 		encodingSize++
 		encodingSize += rlp.BigIntLenExcludingHead(h.BaseFee)
+	}
+
+	// TxDependency
+	if h.TxDependency != nil {
+		buff, err := rlp.EncodeToBytes(h.TxDependency)
+		if err != nil {
+			panic(err)
+		}
+		encodingSize += len(buff)
 	}
 
 	if h.WithdrawalsHash != nil {
@@ -293,6 +307,13 @@ func (h *Header) EncodeRLP(w io.Writer) error {
 
 	if h.BaseFee != nil {
 		if err := rlp.EncodeBigInt(h.BaseFee, w, b[:]); err != nil {
+			return err
+		}
+	}
+
+	// TxDependency
+	if h.TxDependency != nil {
+		if err := rlp.Encode(w, h.TxDependency); err != nil {
 			return err
 		}
 	}
@@ -434,6 +455,13 @@ func (h *Header) DecodeRLP(s *rlp.Stream) error {
 		return fmt.Errorf("read BaseFee: %w", err)
 	}
 	h.BaseFee = new(big.Int).SetBytes(b)
+
+	// TxDependency
+	if rawTxDep, err := s.Raw(); err != nil && err != rlp.EOL {
+		return err
+	} else {
+		rlp.DecodeBytes(rawTxDep, &h.TxDependency)
+	}
 
 	// WithdrawalsHash
 	if b, err = s.Bytes(); err != nil {
@@ -1358,6 +1386,14 @@ func CopyHeader(h *Header) *Header {
 		cpy.WithdrawalsHash = new(libcommon.Hash)
 		cpy.WithdrawalsHash.SetBytes(h.WithdrawalsHash.Bytes())
 	}
+	if h.TxDependency != nil {
+		cpy.TxDependency = make([][]uint64, len(h.TxDependency))
+
+		for i, dep := range h.TxDependency {
+			cpy.TxDependency[i] = make([]uint64, len(dep))
+			copy(cpy.TxDependency[i], dep)
+		}
+	}
 	return &cpy
 }
 
@@ -1601,6 +1637,7 @@ func (b *Block) TxHash() libcommon.Hash      { return b.header.TxHash }
 func (b *Block) ReceiptHash() libcommon.Hash { return b.header.ReceiptHash }
 func (b *Block) UncleHash() libcommon.Hash   { return b.header.UncleHash }
 func (b *Block) Extra() []byte               { return common.CopyBytes(b.header.Extra) }
+func (b *Block) TxDependency() [][]uint64    { return b.header.TxDependency }
 func (b *Block) BaseFee() *big.Int {
 	if b.header.BaseFee == nil {
 		return nil

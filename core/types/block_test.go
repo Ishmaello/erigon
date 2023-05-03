@@ -76,6 +76,333 @@ func TestBlockEncoding(t *testing.T) {
 	}
 }
 
+func TestCanEncodeAndDecodeTxDependencyHeader(t *testing.T) {
+	header := &Header{
+		Coinbase:        libcommon.HexToAddress("8888f1f195afa192cfee860698584c030f4c9db1"),
+		Root:            libcommon.HexToHash("ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017"),
+		MixDigest:       libcommon.HexToHash("bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff498"),
+		Difficulty:      big.NewInt(131072),
+		Number:          big.NewInt(1000),
+		GasLimit:        3141592,
+		GasUsed:         21000,
+		Time:            90,
+		Extra:           []byte("testing"),
+		TxDependency:    [][]uint64{{2, 0, 1}, {1, 0, 0}, {0, 0}},
+		BaseFee:         big.NewInt(7_000_000_000),
+		WithdrawalsHash: new(libcommon.Hash),
+	}
+
+	expectedJson, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := bytes.NewBuffer(nil)
+
+	err = header.EncodeRLP(writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rlpBytes := common.CopyBytes(writer.Bytes())
+	writer.Reset()
+	writer.WriteString(hexutility.Encode(rlpBytes))
+
+	var rawHeader Header
+	fromHex := common.CopyBytes(common.FromHex(writer.String()))
+	stream := rlp.NewStream(bytes.NewReader(fromHex), 0)
+
+	err = rawHeader.DecodeRLP(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resultJson, err := json.Marshal(rawHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(f string, got, want interface{}) {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s mismatch: got %v, want %v", f, got, want)
+		}
+	}
+
+	check("Coinbase", rawHeader.Coinbase, header.Coinbase)
+	check("Root", rawHeader.Root, header.Root)
+	check("MixDigest", rawHeader.MixDigest, header.MixDigest)
+	check("Difficulty", rawHeader.Difficulty, header.Difficulty)
+	check("Number", rawHeader.Number, header.Number)
+	check("GasLimit", rawHeader.GasLimit, header.GasLimit)
+	check("GasUsed", rawHeader.GasUsed, header.GasUsed)
+	check("Nonce", rawHeader.Nonce, header.Nonce)
+	check("Time", rawHeader.Time, header.Time)
+	check("Extra", rawHeader.Extra, header.Extra)
+	check("TxDependency", rawHeader.TxDependency, header.TxDependency)
+	check("BaseFee", rawHeader.BaseFee, header.BaseFee)
+	check("WithdrawalsHash", rawHeader.WithdrawalsHash, header.WithdrawalsHash)
+
+	if string(resultJson) != string(expectedJson) {
+		t.Fatalf("encoded and decoded json do not match, got\n%s\nwant\n%s", resultJson, expectedJson)
+	}
+}
+
+func TestTxDependencyBlockEncoding(t *testing.T) {
+	headerEnc := common.FromHex("f9022ea00000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000000948888f1f195afa192cfee860698584c030f4c9db1a0ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017a00000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000000b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000830200008203e8832fefd88252085a8774657374696e67a0bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff4988800000000000000008501a13b8600c8c3028001c3018080a00000000000000000000000000000000000000000000000000000000000000000")
+
+	var header Header
+	if err := rlp.DecodeBytes(headerEnc, &header); err != nil {
+		t.Fatal("decode error: ", err)
+	}
+
+	check := func(f string, got, want interface{}) {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s mismatch: got %v, want %v", f, got, want)
+		}
+	}
+
+	expectedHeader := &Header{
+		Coinbase:        libcommon.HexToAddress("8888f1f195afa192cfee860698584c030f4c9db1"),
+		Root:            libcommon.HexToHash("ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017"),
+		MixDigest:       libcommon.HexToHash("bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff498"),
+		Difficulty:      big.NewInt(131072),
+		Number:          big.NewInt(1000),
+		GasLimit:        3141592,
+		GasUsed:         21000,
+		Time:            90,
+		Extra:           []byte("testing"),
+		TxDependency:    [][]uint64{{2, 0, 1}, {1, 0, 0}},
+		BaseFee:         big.NewInt(7_000_000_000),
+		WithdrawalsHash: new(libcommon.Hash),
+	}
+
+	check("Coinbase", header.Coinbase, expectedHeader.Coinbase)
+	check("Root", header.Root, expectedHeader.Root)
+	check("MixDigest", header.MixDigest, expectedHeader.MixDigest)
+	check("Difficulty", header.Difficulty, expectedHeader.Difficulty)
+	check("Number", header.Number, expectedHeader.Number)
+	check("GasLimit", header.GasLimit, expectedHeader.GasLimit)
+	check("GasUsed", header.GasUsed, expectedHeader.GasUsed)
+	check("Nonce", header.Nonce, expectedHeader.Nonce)
+	check("Time", header.Time, expectedHeader.Time)
+	check("Extra", header.Extra, expectedHeader.Extra)
+	check("TxDependency", header.TxDependency, expectedHeader.TxDependency)
+	check("BaseFee", header.BaseFee, expectedHeader.BaseFee)
+	check("WithdrawalsHash", header.WithdrawalsHash, expectedHeader.WithdrawalsHash)
+
+	expectedHeaderEnc, err := rlp.EncodeToBytes(&expectedHeader)
+	if err != nil {
+		t.Fatal("encode error: ", err)
+	}
+
+	var block Block
+	block.header = expectedHeader
+	_, err = rlp.EncodeToBytes(&block)
+	if err != nil {
+		t.Fatal("encode error: ", err)
+	}
+
+	if !bytes.Equal(expectedHeaderEnc, headerEnc) {
+		t.Errorf("encoded header mismatch:\ngot:  %x\nwant: %x", expectedHeaderEnc, headerEnc)
+	}
+}
+
+func TestTxDependencyBlockEncodingBor(t *testing.T) {
+	// bor
+	blockEnc := common.FromHex("f90268f90201a083cafc574e1f51ba9dc0568fc617a08ea2429fb384059c972f13b19fa1c8dd55a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347948888f1f195afa192cfee860698584c030f4c9db1a0ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017a05fe50b260da6308036625b850b5d6ced6d0a9f814c0688bc91ffb7b7a3a54b67a0bc37d79753ad738a6dac4921e57392f145d8887476de3f783dfa7edae9283e52b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008302000001832fefd8825208845506eb0780a0bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff49888a13a5a8c8f2bb1c480c6c20201c20180f861f85f800a82c35094095e7baea6a6c7c4c2dfeb977efac326af552d870a801ba09bea4c4daac7c7c52e093e6a4c35dbbcf8856f1af7b059ba20253e70848d094fa08a8fae537ce25ed8cb5af9adac3f141af69bd515bd2ba031522df09b97dd72b1c0")
+
+	var block Block
+
+	if err := rlp.DecodeBytes(blockEnc, &block); err != nil {
+		t.Fatal("decode error: ", err)
+	}
+
+	check := func(f string, got, want interface{}) {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s mismatch: got %v, want %v", f, got, want)
+		}
+	}
+
+	var tx1 Transaction = NewTransaction(0, libcommon.HexToAddress("095e7baea6a6c7c4c2dfeb977efac326af552d87"), new(uint256.Int).SetUint64(10), 50000, new(uint256.Int).SetUint64(10), nil)
+	tx1, _ = tx1.WithSignature(*LatestSignerForChainID(nil), common.Hex2Bytes("9bea4c4daac7c7c52e093e6a4c35dbbcf8856f1af7b059ba20253e70848d094f8a8fae537ce25ed8cb5af9adac3f141af69bd515bd2ba031522df09b97dd72b100"))
+
+	check("Difficulty", block.Difficulty(), big.NewInt(131072))
+	check("GasLimit", block.GasLimit(), uint64(3141592))
+	check("GasUsed", block.GasUsed(), uint64(21000))
+	check("Coinbase", block.Coinbase(), libcommon.HexToAddress("8888f1f195afa192cfee860698584c030f4c9db1"))
+	check("MixDigest", block.MixDigest(), libcommon.HexToHash("bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff498"))
+	check("Root", block.Root(), libcommon.HexToHash("ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017"))
+	check("Hash", block.Hash(), libcommon.HexToHash("0xc6d8dc8995c0a4374bb9f87bd0dd8c0761e6e026a71edbfed5e961c9e55dbd6a"))
+	check("Nonce", block.Nonce().Uint64(), uint64(0xa13a5a8c8f2bb1c4))
+	check("Time", block.Time(), uint64(1426516743))
+	check("Size", block.Size(), common.StorageSize(len(blockEnc)))
+	check("TxDependency", block.TxDependency(), [][]uint64{{2, 1}, {1, 0}})
+	check("len(Transactions)", len(block.Transactions()), 1)
+	check("Transactions[0].Hash", block.Transactions()[0].Hash(), tx1.Hash())
+
+	ourBlockEnc, err := rlp.EncodeToBytes(&block)
+
+	if err != nil {
+		t.Fatal("encode error: ", err)
+	}
+
+	if !bytes.Equal(ourBlockEnc, blockEnc) {
+		t.Errorf("encoded block mismatch:\ngot:  %x\nwant: %x", ourBlockEnc, blockEnc)
+	}
+}
+
+func TestNilTxDependency(t *testing.T) {
+	t.Parallel()
+
+	blockEnc := common.FromHex("f9030bf901fea083cafc574e1f51ba9dc0568fc617a08ea2429fb384059c972f13b19fa1c8dd55a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347948888f1f195afa192cfee860698584c030f4c9db1a0ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017a05fe50b260da6308036625b850b5d6ced6d0a9f814c0688bc91ffb7b7a3a54b67a0bc37d79753ad738a6dac4921e57392f145d8887476de3f783dfa7edae9283e52b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008302000001832fefd8825208845506eb0780a0bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff49888a13a5a8c8f2bb1c4843b9aca00f90106f85f800a82c35094095e7baea6a6c7c4c2dfeb977efac326af552d870a801ba09bea4c4daac7c7c52e093e6a4c35dbbcf8856f1af7b059ba20253e70848d094fa08a8fae537ce25ed8cb5af9adac3f141af69bd515bd2ba031522df09b97dd72b1b8a302f8a0018080843b9aca008301e24194095e7baea6a6c7c4c2dfeb977efac326af552d878080f838f7940000000000000000000000000000000000000001e1a0000000000000000000000000000000000000000000000000000000000000000080a0fe38ca4e44a30002ac54af7cf922a6ac2ba11b7d22f548e8ecb3f51f41cb31b0a06de6a5cbae13c0c856e33acf021b51819636cfc009d39eafb9f606d546e305a8c0")
+
+	var block Block
+
+	if err := rlp.DecodeBytes(blockEnc, &block); err != nil {
+		t.Fatal("decode error: ", err)
+	}
+
+	check := func(f string, got, want interface{}) {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s mismatch: got %v, want %v", f, got, want)
+		}
+	}
+
+	var tx1 Transaction = NewTransaction(0, libcommon.HexToAddress("095e7baea6a6c7c4c2dfeb977efac326af552d87"), new(uint256.Int).SetUint64(10), 50000, new(uint256.Int).SetUint64(10), nil)
+	tx1, _ = tx1.WithSignature(*LatestSignerForChainID(nil), common.Hex2Bytes("9bea4c4daac7c7c52e093e6a4c35dbbcf8856f1af7b059ba20253e70848d094f8a8fae537ce25ed8cb5af9adac3f141af69bd515bd2ba031522df09b97dd72b100"))
+
+	addr := libcommon.HexToAddress("0x0000000000000000000000000000000000000001")
+	accesses := types2.AccessList{types2.AccessTuple{
+		Address: addr,
+		StorageKeys: []libcommon.Hash{
+			{0},
+		},
+	}}
+	to := libcommon.HexToAddress("095e7baea6a6c7c4c2dfeb977efac326af552d87")
+	feeCap, _ := uint256.FromBig(block.BaseFee())
+	var tx2 Transaction = &DynamicFeeTransaction{
+		CommonTx: CommonTx{
+			ChainID: u256.Num1,
+			Nonce:   0,
+			To:      &to,
+			Gas:     123457,
+			Data:    []byte{},
+		},
+		FeeCap:     feeCap,
+		Tip:        u256.Num0,
+		AccessList: accesses,
+	}
+	tx2, err := tx2.WithSignature(*LatestSignerForChainID(big.NewInt(1)), common.Hex2Bytes("fe38ca4e44a30002ac54af7cf922a6ac2ba11b7d22f548e8ecb3f51f41cb31b06de6a5cbae13c0c856e33acf021b51819636cfc009d39eafb9f606d546e305a800"))
+	if err != nil {
+		t.Fatal("invalid signature error: ", err)
+	}
+
+	check("len(Transactions)", len(block.Transactions()), 2)
+	check("Transactions[0].Hash", block.Transactions()[0].Hash(), tx1.Hash())
+	check("Transactions[1].Hash", block.Transactions()[1].Hash(), tx2.Hash())
+	check("Transactions[1].Type", block.Transactions()[1].Type(), tx2.Type())
+
+	assert.Equal(t, true, block.TxDependency() == nil, "invalid tx dependency")
+
+	ourBlockEnc, err := rlp.EncodeToBytes(&block)
+	if err != nil {
+		t.Fatal("encode error: ", err)
+	}
+	if !bytes.Equal(ourBlockEnc, blockEnc) {
+		t.Errorf("encoded block mismatch:\ngot:  %x\nwant: %x", ourBlockEnc, blockEnc)
+	}
+}
+
+func TestBlockEncodingDecoding(t *testing.T) {
+	t.Parallel()
+
+	var block1 Block
+
+	block1.header = &Header{
+		Difficulty:   big.NewInt(1),
+		GasLimit:     uint64(2),
+		GasUsed:      uint64(3),
+		Coinbase:     libcommon.HexToAddress("8888f1f195afa192cfee860698584c030f4c9db1"),
+		MixDigest:    libcommon.HexToHash("bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff498"),
+		Root:         libcommon.HexToHash("ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017"),
+		Time:         uint64(3),
+		Number:       big.NewInt(4),
+		BaseFee:      big.NewInt(5),
+		TxDependency: [][]uint64{{2, 1}, {1, 0}, {2, 0, 1}, {1, 0, 0}},
+	}
+
+	blockEnc, err := rlp.EncodeToBytes(&block1)
+
+	if err != nil {
+		t.Fatal("encode error: ", err)
+	}
+
+	// fmt.Println("blockEnc -", common.Bytes2Hex(blockEnc))
+	// // f90202f901fda00000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000000948888f1f195afa192cfee860698584c030f4c9db1a0ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017a00000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000000b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010402030380a0bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff49888000000000000000005cec20201c20180c3028001c3018080c0c0
+	// // getting the same value in bor
+
+	var block Block
+
+	if err := rlp.DecodeBytes(blockEnc, &block); err != nil {
+		t.Fatal("decode error: ", err)
+	}
+
+	check := func(f string, got, want interface{}) {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s mismatch: got %v, want %v", f, got, want)
+		}
+	}
+
+	check("Difficulty", block.Difficulty(), big.NewInt(1))
+	check("GasLimit", block.GasLimit(), uint64(2))
+	check("GasUsed", block.GasUsed(), uint64(3))
+	check("Coinbase", block.Coinbase(), libcommon.HexToAddress("8888f1f195afa192cfee860698584c030f4c9db1"))
+	check("MixDigest", block.MixDigest(), libcommon.HexToHash("bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff498"))
+	check("Root", block.Root(), libcommon.HexToHash("ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017"))
+	check("Time", block.Time(), uint64(3))
+	check("Number", block.Number(), big.NewInt(4))
+	check("BaseFee", block.BaseFee(), big.NewInt(5))
+	check("TxDependency", block.TxDependency(), [][]uint64{{2, 1}, {1, 0}, {2, 0, 1}, {1, 0, 0}})
+}
+
+func TestOnlyTxDepHeader(t *testing.T) {
+	header := &Header{
+		TxDependency: [][]uint64{{2, 0, 1}},
+	}
+
+	headerEnc, err := rlp.EncodeToBytes(&header)
+	if err != nil {
+		t.Fatal("encode error: ", err)
+	}
+
+	var headerNew Header
+	if err := rlp.DecodeBytes(headerEnc, &headerNew); err != nil {
+		t.Fatal("decode error: ", err)
+	}
+
+	check := func(f string, got, want interface{}) {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s mismatch: got %v, want %v", f, got, want)
+		}
+	}
+	check("Difficulty", headerNew.TxDependency, header.TxDependency)
+}
+
+func TestOnlyTxDepBody(t *testing.T) {
+
+	var block Block
+
+	header := &Header{
+		TxDependency: [][]uint64{{2, 0, 1}, {1, 0, 0}},
+	}
+
+	block.header = header
+
+	_, err := rlp.EncodeToBytes(&block)
+	if err != nil {
+		t.Fatal("encode error: ", err)
+	}
+}
+
 func TestEIP1559BlockEncoding(t *testing.T) {
 	blockEnc := common.FromHex("f9030bf901fea083cafc574e1f51ba9dc0568fc617a08ea2429fb384059c972f13b19fa1c8dd55a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347948888f1f195afa192cfee860698584c030f4c9db1a0ef1552a40b7165c3cd773806b9e0c165b75356e0314bf0706f279c729f51e017a05fe50b260da6308036625b850b5d6ced6d0a9f814c0688bc91ffb7b7a3a54b67a0bc37d79753ad738a6dac4921e57392f145d8887476de3f783dfa7edae9283e52b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008302000001832fefd8825208845506eb0780a0bd4472abb6659ebe3ee06ee4d7b72a00a9f4d001caca51342001075469aff49888a13a5a8c8f2bb1c4843b9aca00f90106f85f800a82c35094095e7baea6a6c7c4c2dfeb977efac326af552d870a801ba09bea4c4daac7c7c52e093e6a4c35dbbcf8856f1af7b059ba20253e70848d094fa08a8fae537ce25ed8cb5af9adac3f141af69bd515bd2ba031522df09b97dd72b1b8a302f8a0018080843b9aca008301e24194095e7baea6a6c7c4c2dfeb977efac326af552d878080f838f7940000000000000000000000000000000000000001e1a0000000000000000000000000000000000000000000000000000000000000000080a0fe38ca4e44a30002ac54af7cf922a6ac2ba11b7d22f548e8ecb3f51f41cb31b0a06de6a5cbae13c0c856e33acf021b51819636cfc009d39eafb9f606d546e305a8c0")
 	var block Block
