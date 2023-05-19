@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/ledgerwatch/erigon-lib/txpool"
 	types2 "github.com/ledgerwatch/erigon-lib/types"
 
+	"github.com/ledgerwatch/erigon/core/blockstm"
 	"github.com/ledgerwatch/erigon/core/types/accounts"
 	"github.com/ledgerwatch/erigon/rlp"
 
@@ -400,8 +402,57 @@ func addTransactionsToMiningBlock(logPrefix string, current *MiningBlock, chainC
 
 	done := false
 
+	var depsMVReadList [][]blockstm.ReadDescriptor
+
+	var depsMVFullWriteList [][]blockstm.WriteDescriptor
+
+	var mvReadMapList []map[blockstm.Key]blockstm.ReadDescriptor
+
+	var deps map[int]map[int]bool
+
+	chDeps := make(chan blockstm.TxDep)
+
+	var count int
+
+	var depsWg sync.WaitGroup
+
+	var EnableMVHashMap bool
+
+	// TODO: will be handled (and made mandatory) in a hardfork event
+	// when true, will get the transaction dependencies for parallel execution
+	EnableMVHashMap = true
+
+	// create and add empty mvHashMap in statedb
+	if EnableMVHashMap {
+		depsMVReadList = [][]blockstm.ReadDescriptor{}
+
+		depsMVFullWriteList = [][]blockstm.WriteDescriptor{}
+
+		mvReadMapList = []map[blockstm.Key]blockstm.ReadDescriptor{}
+
+		deps = map[int]map[int]bool{}
+
+		chDeps = make(chan blockstm.TxDep)
+
+		count = 0
+
+		depsWg.Add(1)
+
+		go func(chDeps chan blockstm.TxDep) {
+			for t := range chDeps {
+				deps = blockstm.UpdateDeps(deps, t)
+			}
+
+			depsWg.Done()
+		}(chDeps)
+	}
+
 LOOP:
 	for {
+		if EnableMVHashMap {
+			ibs.AddEmptyMVHashMap()
+		}
+
 		// see if we need to stop now
 		if stopped != nil {
 			select {
@@ -470,12 +521,69 @@ LOOP:
 			log.Debug(fmt.Sprintf("[%s] addTransactionsToMiningBlock Successful", logPrefix), "sender", from, "nonce", txn.GetNonce(), "payload", payloadId)
 			coalescedLogs = append(coalescedLogs, logs...)
 			tcount++
+			if EnableMVHashMap {
+				depsMVReadList = append(depsMVReadList, ibs.MVReadList())
+				depsMVFullWriteList = append(depsMVFullWriteList, ibs.MVFullWriteList())
+				mvReadMapList = append(mvReadMapList, ibs.MVReadMap())
+
+				temp := blockstm.TxDep{
+					Index:         tcount - 1,
+					ReadList:      depsMVReadList[count],
+					FullWriteList: depsMVFullWriteList,
+				}
+				chDeps <- temp
+				count++
+			}
+
 			txs.Shift()
 		} else {
 			// Strange error, discard the transaction and get the next in line (note, the
 			// nonce-too-high clause will prevent us from executing in vain).
 			log.Debug(fmt.Sprintf("[%s] Skipping transaction", logPrefix), "hash", txn.Hash(), "sender", from, "err", err)
 			txs.Shift()
+		}
+
+		if EnableMVHashMap {
+			ibs.ClearReadMap()
+			ibs.ClearWriteMap()
+		}
+	}
+
+	if EnableMVHashMap {
+		close(chDeps)
+		depsWg.Wait()
+
+		if len(mvReadMapList) > 0 {
+			tempDeps := make([][]uint64, len(mvReadMapList))
+
+			for j := range deps[0] {
+				tempDeps[0] = append(tempDeps[0], uint64(j))
+			}
+
+			delayFlag := true
+
+			for i := 1; i <= len(mvReadMapList)-1; i++ {
+				reads := mvReadMapList[i-1]
+
+				_, ok1 := reads[blockstm.NewSubpathKey(coinbase, state.BalancePath)]
+				_, ok2 := reads[blockstm.NewSubpathKey(*chainConfig.Eip1559FeeCollector, state.BalancePath)]
+
+				if ok1 || ok2 {
+					delayFlag = false
+				}
+
+				for j := range deps[i] {
+					tempDeps[i] = append(tempDeps[i], uint64(j))
+				}
+			}
+
+			if delayFlag {
+				header.TxDependency = tempDeps
+			} else {
+				header.TxDependency = nil
+			}
+		} else {
+			header.TxDependency = nil
 		}
 	}
 

@@ -367,6 +367,12 @@ func (sw *IntraBlockState) ApplyMVWriteSet(writes []blockstm.WriteDescriptor) {
 	}
 }
 
+// add empty MVHashMap to StateDB
+func (sw *IntraBlockState) AddEmptyMVHashMap() {
+	mvh := blockstm.MakeMVHashMap()
+	sw.mvHashmap = mvh
+}
+
 func (sdb *IntraBlockState) SetTrace(trace bool) {
 	sdb.trace = trace
 }
