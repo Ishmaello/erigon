@@ -420,7 +420,11 @@ func addTransactionsToMiningBlock(logPrefix string, current *MiningBlock, chainC
 
 	// TODO: will be handled (and made mandatory) in a hardfork event
 	// when true, will get the transaction dependencies for parallel execution
-	EnableMVHashMap = true
+	if chainConfig.Bor.IsParallelUniverse(header.Number) {
+		EnableMVHashMap = true
+	} else {
+		EnableMVHashMap = false
+	}
 
 	// create and add empty mvHashMap in statedb
 	if EnableMVHashMap {
