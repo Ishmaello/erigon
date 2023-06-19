@@ -32,12 +32,7 @@ jobs:
         id: prepare
         run: |
             TAG=${GITHUB_REF#refs/tags/}
-            echo ::set-output name=tag_name::${TAG}
-            
-      - name: Test tag name
-        run: |
-            TAG=${{ steps.prepare.outputs.tag_name }}
-            echo ${TAG:1}            
+            echo ::set-output name=tag_name::${TAG}         
             
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
@@ -63,6 +58,6 @@ jobs:
             
       - name: Push all relevant images to docker hub
         run: |
-            TAG=${GITHUB_REF#refs/tags/:1}
-            docker push 0xpolygon/erigon:${TAG}-amd64
-            docker push 0xpolygon/erigon:${TAG}-arm64
+            TAG=${{ steps.prepare.outputs.tag_name }}
+            docker push 0xpolygon/erigon:${TAG:1}-amd64
+            docker push 0xpolygon/erigon:${TAG:1}-arm64
