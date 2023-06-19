@@ -38,23 +38,18 @@ jobs:
 
       - name: Run GoReleaser
         run: |
-            make release
+          make release
         env:
           GITHUB_TOKEN: ${{ secrets.GIT_TOKEN }}
           VERSION: ${{ steps.prepare.outputs.tag_name }}
           DOCKER_USERNAME: ${{ secrets.DOCKERHUB }}
           DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_KEY }}
-          DOCKER_REGISTRY: hub.docker.com
           
       - name: Log in to Docker Hub
         uses: docker/login-action@v1
         with:
           username: ${{ secrets.DOCKERHUB }}
           password: ${{ secrets.DOCKERHUB_KEY }}
-          
-      - name: List Docker images push manually
-        run: |
-            docker images
             
       - name: Push all relevant images to docker hub
         run: |

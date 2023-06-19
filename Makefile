@@ -227,8 +227,6 @@ release-dry-run: git-submodules
 		-e GITHUB_TOKEN \
 		-e DOCKER_USERNAME \
 		-e DOCKER_PASSWORD \
-		-e DOCKER_REGISTRY \
-		-e DOCKER_CREDS_FILE \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		-v `pwd`:/go/src/$(PACKAGE_NAME) \
 		-w /go/src/$(PACKAGE_NAME) \
@@ -244,8 +242,6 @@ release: git-submodules
 		-e GITHUB_TOKEN \
 		-e DOCKER_USERNAME \
 		-e DOCKER_PASSWORD \
-		-e DOCKER_REGISTRY \
-		-e DOCKER_CREDS_FILE \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		-v `pwd`:/go/src/$(PACKAGE_NAME) \
 		-w /go/src/$(PACKAGE_NAME) \
