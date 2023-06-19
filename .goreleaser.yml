@@ -16,7 +16,7 @@ builds:
       - CXX=o64-clang++
     tags: [ nosqlite, noboltdb ]
     ldflags: -s -w
-  
+
   - id: darwin-arm64
     main: ./cmd/erigon
     binary: erigon
