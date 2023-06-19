@@ -44,3 +44,4 @@ jobs:
           VERSION: ${{ steps.prepare.outputs.tag_name }}
           DOCKER_USERNAME: ${{ secrets.DOCKERHUB }}
           DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_KEY }}
+          DOCKER_REGISTRY: hub.docker.com
