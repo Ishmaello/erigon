@@ -45,3 +45,13 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKERHUB }}
           DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_KEY }}
           DOCKER_REGISTRY: hub.docker.com
+          
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKERHUB }}
+          password: ${{ secrets.DOCKERHUB_KEY }}
+          
+      - name: List Docker images push manually
+        run: |
+            docker images
