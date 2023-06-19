@@ -7,12 +7,6 @@ name: Release
 
 on:
   push:
-    branches-ignore:
-      - '**'
-    tags:
-      - 'v*.*.*'
-      # to be used by fork patch-releases ^^
-      - 'v*.*.*-*'
 
 jobs:
   goreleaser:
@@ -36,11 +30,9 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
 
-      - run: echo ${{ steps.prepare.outputs.tag_name }}
-
       - name: Run GoReleaser
         run: |
-          make release
+            make release
         env:
           GITHUB_TOKEN: ${{ secrets.GIT_TOKEN }}
           VERSION: ${{ steps.prepare.outputs.tag_name }}
