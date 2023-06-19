@@ -35,13 +35,6 @@ jobs:
             echo ::set-output name=tag_name::${TAG}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
-        
-      - name: create goreleaser docker registry login file
-        id: create-json
-        uses: jsdaniell/create-json@v1.2.2
-        with:
-          name: "docker-registry.json"
-          json: ${{ secrets.DOCKER_REGISTRY_JSON }}
 
       - name: Run GoReleaser
         run: |
@@ -52,7 +45,6 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKERHUB }}
           DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_KEY }}
           DOCKER_REGISTRY: hub.docker.com
-          DOCKER_CREDS_FILE: /home/runner/work/erigon/erigon/docker-registry.json
           
       - name: Log in to Docker Hub
         uses: docker/login-action@v1
@@ -63,3 +55,7 @@ jobs:
       - name: List Docker images push manually
         run: |
             docker images
+            
+      - name: Push all relevant images to docker hub
+        run: |
+            docker push 0xpolygon/erigon
