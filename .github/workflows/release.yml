@@ -33,7 +33,6 @@ jobs:
         run: |
             TAG=${GITHUB_REF#refs/tags/}
             echo ::set-output name=tag_name::${TAG}         
-            
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
 
