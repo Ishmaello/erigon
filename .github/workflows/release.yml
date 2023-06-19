@@ -50,7 +50,12 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB }}
           password: ${{ secrets.DOCKERHUB_KEY }}
+          
+      - name: List images
+        run: |
+            docker images     
             
       - name: Push all relevant images to docker hub
         run: |
-            docker push 0xpolygon/erigon
+            docker push 0xpolygon/erigon:${{ steps.prepare.outputs.tag_name }}-amd64
+            docker push 0xpolygon/erigon:${{ steps.prepare.outputs.tag_name }}-arm64
